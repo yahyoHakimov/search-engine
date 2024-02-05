@@ -5,6 +5,12 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Windows.Forms;
 using Excel = Microsoft.Office.Interop.Excel;
+using static Google.Apis.Requests.BatchRequest;
+using Newtonsoft.Json;
+using System.Linq;
+using System.DirectoryServices;
+using System.IO;
+using System.Reflection;
 
 
 namespace ExcelAddIn1
@@ -12,40 +18,53 @@ namespace ExcelAddIn1
     public partial class UserControl1 : UserControl
     {
 
+        private AppSettings _appSettings;
+
 
         public UserControl1()
         {
             InitializeComponent();
-            InitializeSearchControls();
+            InitializeSearchControls(); LoadConfiguration();
+        }
+
+        private void LoadConfiguration()
+        {
+            try
+            {
+                string path = "C:\\Users\\user\\Desktop\\Projects\\C#\\Project\\ExcelAddIn1\\ExcelAddIn1\\appSettings.json";
+                string json = File.ReadAllText(path);
+                _appSettings = JsonConvert.DeserializeObject<AppSettings>(json);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading configuration: {ex.Message}", "Configuration Error");
+            }
         }
 
         //private TextBox 
         private void InitializeSearchControls()
         {
                       
-            button.Click += button1_Click;
+            button.Click += button_Click;
             textBox.Click += textBox_TextChanged;
-
-
             Controls.Add(button);
-            //Controls.Add(textBoxSearch);
 
         }
 
-        private string ApiKey = "AIzaSyCJliVyqGoNRpVN_5hJ491EG5QUPwoAua4";
-        private string SearchEngineId = "7441ce6c6fb45452a";
+
+        
 
         private void Ribbon1_Load(object sender, RibbonUIEventArgs e)
         {
 
         }
 
-        private async void button1_Click(object sender, EventArgs e)
+        private async void button_Click(object sender, EventArgs e)
         {
-            // Use a custom form to get the search term from the user
-            //string searchTerm = GetUserInput("Enter your search term:");
 
             string searchTerm = textBox.Text;
+            
+            string apiUrl = _appSettings.ApiUrl;
 
             if (!string.IsNullOrEmpty(searchTerm))
             {
@@ -53,15 +72,20 @@ namespace ExcelAddIn1
                 {
                     using (HttpClient client = new HttpClient())
                     {
-                        string apiUrl = $"https://www.googleapis.com/customsearch/v1?q={searchTerm}&key={ApiKey}&cx={SearchEngineId}";
 
                         HttpResponseMessage response = await client.GetAsync(apiUrl);
 
                         if (response.IsSuccessStatusCode)
                         {
                             string result = await response.Content.ReadAsStringAsync();
-                            // Process the JSON result as needed
-                            AddResultToExcel(result);
+
+                            var outerResponse = JsonConvert.DeserializeObject<OuterResponse>(result);
+                            var innerJson = outerResponse?.searchResponse;
+
+                            var searchResults = JsonConvert.DeserializeObject<SearchResponse>(innerJson)?.items;
+
+                            AddResultToExcel(searchResults);
+
 
                         }
                         else
@@ -77,30 +101,7 @@ namespace ExcelAddIn1
             }
         }
 
-        private string GetUserInput(string prompt)
-        {
-            // Use a custom form to get user input
-            using (var form = new Form())
-            {
-                form.Text = "User Input";
-                var label = new System.Windows.Forms.Label() { Left = 20, Top = 20, Text = prompt };
-                var textBox = new System.Windows.Forms.TextBox() { Left = 20, Top = 50, Width = 100 };
-                var button = new System.Windows.Forms.Button() { Text = "OK", Left = 150, Top = 50 };
-
-                button.Click += (s, e) => { form.Close(); };
-
-                form.Controls.Add(label);
-                form.Controls.Add(textBox);
-                form.Controls.Add(button);
-
-                form.ShowDialog();
-
-                return textBox.Text;
-            }
-        }
-
-
-        private void AddResultToExcel(string jsonResult)
+        private void AddResultToExcel(List<SearchResult> searchResults)
         {
             try
             {
@@ -120,9 +121,6 @@ namespace ExcelAddIn1
                 }
                 Excel.Worksheet activeWorksheet = activeWorkbook.ActiveSheet;
 
-                //Malumotlarni ushlab turish uchun List
-                List<SearchResult> searchResults = ParseJsonResult(jsonResult);
-
                 //agar yangi worksheet kerak bo'lsa och
                 if (activeWorksheet == null)
                 {
@@ -136,22 +134,39 @@ namespace ExcelAddIn1
                 activeWorksheet.Cells[1, 1].Value = "Title";
                 activeWorksheet.Cells[1, 2].Value = "Link";
 
+                activeWorksheet.Columns[1].ColumnWidth = 50;  // Adjust the width as needed
+
+                // Set column width for Link
+                activeWorksheet.Columns[2].ColumnWidth = 100;  // Adjust the width as needed
+
+
                 //ListOfObject ishlatgan holda worksheetga malumotlar qo'shish
-                Excel.ListObject table = activeWorksheet.ListObjects.Add(Excel.XlListObjectSourceType.xlSrcRange, activeWorksheet.UsedRange, Type.Missing, Excel.XlYesNoGuess.xlYes);
+                Excel.ListObject table = activeWorksheet.
+                    ListObjects.Add(
+                    Excel.XlListObjectSourceType.xlSrcRange,
+                    activeWorksheet.UsedRange,
+                    Type.Missing, Excel.XlYesNoGuess.xlYes);
                 table.Name = "SearchResults";
 
                 //2-qatordan boshlasin
                 int rowIndex = 2;
 
 
-                foreach (var result in searchResults)
+                if (searchResults != null && searchResults.Any())
                 {
-                    activeWorksheet.Cells[rowIndex, 1].Value = result.Title;
-                    activeWorksheet.Cells[rowIndex, 2].Value = result.Link;
+                    foreach (var result in searchResults)
+                    {
+                        activeWorksheet.Cells[rowIndex, 1].Value = result.Title;
+                        activeWorksheet.Cells[rowIndex, 2].Value = result.Link;
 
-                    rowIndex++;
+                        rowIndex++;
+                    }
+                    //MessageBox.Show("Search results added to Excel!", "Success");
                 }
-                MessageBox.Show("Search results added to Excel!", "Success");
+                else
+                {
+                    MessageBox.Show("No search results to add to Excel.", "Information");
+                }
             }
             catch (Exception ex)
             {
@@ -159,31 +174,23 @@ namespace ExcelAddIn1
             }
         }
 
-        private List<SearchResult> ParseJsonResult(string jsonResult)
+        public class OuterResponse
         {
-            List<SearchResult> results = new List<SearchResult>();
-
-            JObject json = JObject.Parse(jsonResult);
-            JArray items = (JArray)json["items"];
-
-            if (items != null)
-            {
-                foreach (var item in items)
-                {
-                    string title = (string)item["title"];
-                    string link = (string)item["link"];
-
-                    results.Add(new SearchResult { Title = title, Link = link });
-                }
-            }
-
-            return results;
+            public string Message { get; set; } 
+            public string searchResponse { get; set; }
         }
 
-        private class SearchResult
+        public class SearchResponse
+        {
+            public List<SearchResult> items { get; set; }
+            // Add other properties as needed
+        }
+
+        public class SearchResult
         {
             public string Title { get; set; }
             public string Link { get; set; }
+            // Add other properties as needed
         }
 
         private void textBox_TextChanged(object sender, EventArgs e)
@@ -191,10 +198,7 @@ namespace ExcelAddIn1
 
         }
 
-        private void button_Click(object sender, EventArgs e)
-        {
-
-        }
+       
     }
 }
 
